@@ -25,7 +25,6 @@ weights/runs/
 
 # 运行产物 (运行 scripts/batch_detect_demo.py / src.train --compare 重建)
 outputs/defect_shots/
-outputs/reports/*.xlsx
 outputs/history.json
 
 # Ultralytics 验证输出
