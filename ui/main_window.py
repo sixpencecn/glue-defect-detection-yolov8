@@ -2,9 +2,10 @@
 """
 ============================================================================
 模块功能: 简易 PyQt5 可视化界面
-  功能: 批量上传图片 -> 一键检测 -> 显示缺陷框与判定 -> 历史记录 -> 导出报表
+  功能: 批量上传图片 -> 一键检测 -> 原图/结果图对比显示 -> 历史记录 -> 导出报表
   对应需求: 核心功能模块 7 (简易PyQt可视化界面)
   说明: 支持一次性上传多张图片, 后台线程逐张检测并显示进度
+        结果区左右并排: 左侧原图, 右侧该图的带框检测结果
 ============================================================================
 运行: python app.py
 ============================================================================
@@ -54,11 +55,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("锂电池胶路缺陷检测系统  |  YOLOv8 · 2.5D光源胶检")
-        self.resize(1200, 760)
+        self.resize(1280, 800)
         self.cfg = load_config()
         self.detector = None
         self.recorder = DetectionRecorder(self.cfg)
         self.image_paths = []          # 已上传的多张图片路径
+        self.result_cache = {}         # 路径 -> 检测结果(含 annotated), 用于切换图片回看
         self.current_result = None
         self._batch_ok = 0             # 本批次 OK 计数
         self._batch_ng = 0             # 本批次 NG 计数
@@ -99,15 +101,34 @@ class MainWindow(QMainWindow):
         ctrl.addWidget(self.cb_preprocess)
         main_layout.addLayout(ctrl)
 
-        # 主体: 左侧图像显示 + 右侧历史
+        # 主体: 左侧图像对比 + 右侧历史
         splitter = QSplitter(Qt.Horizontal)
         left = QGroupBox("图像与检测结果")
         left_layout = QVBoxLayout()
-        self.image_label = QLabel("请上传胶路图片(可一次选择多张)")
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setMinimumSize(640, 420)
-        self.image_label.setStyleSheet("border:1px solid #ccc; background:#f7f7f7;")
-        left_layout.addWidget(self.image_label)
+
+        # 图像对比区: 左原图 / 右结果图
+        img_compare = QHBoxLayout()
+        orig_box = QGroupBox("原图")
+        orig_layout = QVBoxLayout()
+        self.original_label = QLabel("等待上传图片")
+        self.original_label.setAlignment(Qt.AlignCenter)
+        self.original_label.setMinimumSize(320, 400)
+        self.original_label.setStyleSheet("border:1px solid #ccc; background:#f7f7f7;")
+        orig_layout.addWidget(self.original_label)
+        orig_box.setLayout(orig_layout)
+        img_compare.addWidget(orig_box)
+
+        res_box = QGroupBox("检测结果图(带框)")
+        res_layout = QVBoxLayout()
+        self.result_image_label = QLabel("尚未检测\n点击[一键检测]开始")
+        self.result_image_label.setAlignment(Qt.AlignCenter)
+        self.result_image_label.setMinimumSize(320, 400)
+        self.result_image_label.setStyleSheet("border:1px solid #ccc; background:#f7f7f7;")
+        res_layout.addWidget(self.result_image_label)
+        res_box.setLayout(res_layout)
+        img_compare.addWidget(res_box)
+        left_layout.addLayout(img_compare)
+
         self.result_label = QLabel("检测状态: --")
         self.result_label.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
         left_layout.addWidget(self.result_label)
@@ -117,10 +138,10 @@ class MainWindow(QMainWindow):
 
         # 已上传图片列表
         self.image_list = QListWidget()
-        self.image_list.setMaximumHeight(96)
+        self.image_list.setMaximumHeight(88)
         self.image_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.image_list.itemClicked.connect(self.on_image_selected)
-        left_layout.addWidget(QLabel("已上传图片(点击可查看原图):"))
+        left_layout.addWidget(QLabel("已上传图片(点击可切换查看原图与结果图):"))
         left_layout.addWidget(self.image_list)
 
         # 批量检测进度条
@@ -145,7 +166,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter)
 
-        self.statusBar().showMessage("就绪。支持一次上传多张图片批量检测; 请确认 weights/best.pt 已训练。")
+        self.statusBar().showMessage("就绪。左原图 / 右结果图对比; 支持一次上传多张批量检测。")
 
     def _load_model(self):
         try:
@@ -165,19 +186,32 @@ class MainWindow(QMainWindow):
         if not paths:
             return
         self.image_paths = list(paths)
+        self.result_cache.clear()
         self.image_list.clear()
         for p in self.image_paths:
             self.image_list.addItem(os.path.basename(p))
-        self._show_image(cv2.imread(self.image_paths[0]))
+        first = self.image_paths[0]
+        self._set_pixmap(self.original_label, cv2.imread(first), "无法读取原图")
+        self._set_pixmap(self.result_image_label, None, "尚未检测\n点击[一键检测]开始")
         self.result_label.setText("检测状态: 待检测")
         self.detail_label.setText(f"已上传 {len(self.image_paths)} 张图片, 点击[一键检测]开始批量检测")
         self.statusBar().showMessage(f"已加载 {len(self.image_paths)} 张图片")
 
     def on_image_selected(self, item):
-        """点击列表中的图片, 显示其原图"""
+        """点击列表中的图片: 左侧显示原图, 右侧显示该图已有的检测结果"""
         row = self.image_list.row(item)
-        if 0 <= row < len(self.image_paths):
-            self._show_image(cv2.imread(self.image_paths[row]))
+        if not (0 <= row < len(self.image_paths)):
+            return
+        path = self.image_paths[row]
+        self._set_pixmap(self.original_label, cv2.imread(path), "无法读取原图")
+        result = self.result_cache.get(path)
+        if result is not None:
+            self._set_pixmap(self.result_image_label, result["annotated"])
+            self._update_result_text(result)
+        else:
+            self._set_pixmap(self.result_image_label, None, "该图尚未检测\n点击[一键检测]开始")
+            self.result_label.setText("检测状态: 待检测")
+            self.detail_label.setText(f"已选中: {os.path.basename(path)}")
 
     def run_detect(self):
         if not self.image_paths:
@@ -205,31 +239,42 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_detect_done(self, result, current, total):
-        """每检测完一张: 显示该张结果 + 记录历史 + 更新进度"""
+        """每检测完一张: 左侧原图 + 右侧结果图 + 记录历史 + 更新进度"""
         self.current_result = result
-        self._show_image(result["annotated"])
+        if 1 <= current <= len(self.image_paths):
+            path = self.image_paths[current - 1]
+            self.result_cache[path] = result
+            self._set_pixmap(self.original_label, cv2.imread(path), "无法读取原图")
+        self._set_pixmap(self.result_image_label, result["annotated"])
         status = result["status"]
         if status == "OK":
             self._batch_ok += 1
-            color = "green"
         else:
             self._batch_ng += 1
-            color = "red"
-        self.result_label.setText(
-            f'<span style="color:{color};">检测判定: {status}</span>  |  '
-            f'第 {current}/{total} 张  |  耗时: {result["elapsed_ms"]}ms')
-        if result["defects"]:
-            lines = [f"• {d['name_zh']} ({d['class']}): 置信度 {d['conf']:.2f}, 框 {d['bbox']}"
-                     for d in result["defects"]]
-            self.detail_label.setText("检出目标:\n" + "\n".join(lines))
-        else:
-            self.detail_label.setText("未检出目标 (请检查模型是否已针对胶路数据训练)")
+        self._update_result_text(result, progress=f"第 {current}/{total} 张")
         self.progress.setValue(current)
         try:
             self.recorder.record(result)
             self._refresh_history()
         except Exception as e:
             self.statusBar().showMessage(f"记录失败: {e}")
+
+    def _update_result_text(self, result, progress=""):
+        """统一更新判定标签与缺陷明细"""
+        status = result["status"]
+        color = "green" if status == "OK" else "red"
+        parts = [f'<span style="color:{color};">检测判定: {status}</span>']
+        if progress:
+            parts.append(progress)
+        parts.append(f'耗时: {result["elapsed_ms"]}ms')
+        parts.append(f'置信度阈值: {result["conf"]}')
+        self.result_label.setText("  |  ".join(parts))
+        if result["defects"]:
+            lines = [f"• {d['name_zh']} ({d['class']}): 置信度 {d['conf']:.2f}, 框 {d['bbox']}"
+                     for d in result["defects"]]
+            self.detail_label.setText("检出目标:\n" + "\n".join(lines))
+        else:
+            self.detail_label.setText("未检出目标 (请检查模型是否已针对胶路数据训练)")
 
     def on_batch_finished(self, total):
         """全部检测完成: 恢复按钮并显示汇总"""
@@ -257,15 +302,19 @@ class MainWindow(QMainWindow):
             self._refresh_history()
             self.statusBar().showMessage("历史已清空")
 
-    def _show_image(self, bgr):
+    def _set_pixmap(self, label, bgr, placeholder=""):
+        """把 BGR 图像显示到指定 QLabel; 无图时显示占位文字"""
         if bgr is None:
+            label.setPixmap(QPixmap())
+            label.setText(placeholder)
             return
+        label.setText("")
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
         pix = QPixmap.fromImage(qimg)
-        self.image_label.setPixmap(
-            pix.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        label.setPixmap(
+            pix.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _refresh_history(self):
         rows = self.recorder.history
