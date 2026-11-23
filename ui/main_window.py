@@ -2,8 +2,9 @@
 """
 ============================================================================
 模块功能: 简易 PyQt5 可视化界面
-  功能: 上传/导入图片 -> 一键检测 -> 显示缺陷框与判定 -> 历史记录 -> 导出报表
+  功能: 批量上传图片 -> 一键检测 -> 显示缺陷框与判定 -> 历史记录 -> 导出报表
   对应需求: 核心功能模块 7 (简易PyQt可视化界面)
+  说明: 支持一次性上传多张图片, 后台线程逐张检测并显示进度
 ============================================================================
 运行: python app.py
 ============================================================================
@@ -15,7 +16,8 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox,
-    QGroupBox, QSplitter, QHeaderView, QComboBox, QCheckBox,
+    QGroupBox, QSplitter, QHeaderView, QCheckBox, QListWidget,
+    QProgressBar, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QFont
@@ -27,19 +29,23 @@ from src.utils import load_config, PROJECT_ROOT
 
 
 class DetectWorker(QThread):
-    """后台检测线程, 避免界面卡顿"""
-    finished = pyqtSignal(dict)
+    """后台批量检测线程, 避免界面卡顿; 每检测完一张即发出结果信号"""
+    result_ready = pyqtSignal(dict, int, int)   # (检测结果, 当前序号, 总数)
+    all_finished = pyqtSignal(int)              # 全部完成, 参数为总数
     error = pyqtSignal(str)
 
-    def __init__(self, detector, image_path):
+    def __init__(self, detector, image_paths):
         super().__init__()
         self.detector = detector
-        self.image_path = image_path
+        self.image_paths = image_paths
 
     def run(self):
         try:
-            result = self.detector.detect(self.image_path)
-            self.finished.emit(result)
+            total = len(self.image_paths)
+            for idx, path in enumerate(self.image_paths, 1):
+                result = self.detector.detect(path)
+                self.result_ready.emit(result, idx, total)
+            self.all_finished.emit(total)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -52,8 +58,10 @@ class MainWindow(QMainWindow):
         self.cfg = load_config()
         self.detector = None
         self.recorder = DetectionRecorder(self.cfg)
-        self.current_path = None
+        self.image_paths = []          # 已上传的多张图片路径
         self.current_result = None
+        self._batch_ok = 0             # 本批次 OK 计数
+        self._batch_ng = 0             # 本批次 NG 计数
         self._init_ui()
         self._load_model()
         self._refresh_history()
@@ -75,8 +83,8 @@ class MainWindow(QMainWindow):
 
         # 顶部控制区
         ctrl = QHBoxLayout()
-        self.btn_open = QPushButton("上传图片")
-        self.btn_open.clicked.connect(self.open_image)
+        self.btn_open = QPushButton("上传图片(可多选)")
+        self.btn_open.clicked.connect(self.open_images)
         self.btn_detect = QPushButton("一键检测")
         self.btn_detect.clicked.connect(self.run_detect)
         self.btn_export = QPushButton("导出Excel报表")
@@ -95,9 +103,9 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         left = QGroupBox("图像与检测结果")
         left_layout = QVBoxLayout()
-        self.image_label = QLabel("请上传胶路图片")
+        self.image_label = QLabel("请上传胶路图片(可一次选择多张)")
         self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setMinimumSize(640, 480)
+        self.image_label.setMinimumSize(640, 420)
         self.image_label.setStyleSheet("border:1px solid #ccc; background:#f7f7f7;")
         left_layout.addWidget(self.image_label)
         self.result_label = QLabel("检测状态: --")
@@ -106,6 +114,20 @@ class MainWindow(QMainWindow):
         self.detail_label = QLabel("缺陷信息将在此显示")
         self.detail_label.setWordWrap(True)
         left_layout.addWidget(self.detail_label)
+
+        # 已上传图片列表
+        self.image_list = QListWidget()
+        self.image_list.setMaximumHeight(96)
+        self.image_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.image_list.itemClicked.connect(self.on_image_selected)
+        left_layout.addWidget(QLabel("已上传图片(点击可查看原图):"))
+        left_layout.addWidget(self.image_list)
+
+        # 批量检测进度条
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        left_layout.addWidget(self.progress)
+
         left.setLayout(left_layout)
         splitter.addWidget(left)
 
@@ -123,7 +145,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter)
 
-        self.statusBar().showMessage("就绪。请先确认 weights/best.pt 已训练, 否则使用预训练权重演示流程。")
+        self.statusBar().showMessage("就绪。支持一次上传多张图片批量检测; 请确认 weights/best.pt 已训练。")
 
     def _load_model(self):
         try:
@@ -134,22 +156,32 @@ class MainWindow(QMainWindow):
                                 f"无法加载模型: {e}\n请先安装依赖并训练模型, 详见 README。")
 
     # ---------- 功能槽 ----------
-    def open_image(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择胶路图片", os.path.join(PROJECT_ROOT, "data"),
+    def open_images(self):
+        """一次性选择多张图片"""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择胶路图片(可多选, 按住Ctrl/Shift多选)",
+            os.path.join(PROJECT_ROOT, "data", "dataset", "images", "test"),
             "图片 (*.jpg *.png *.jpeg)")
-        if not path:
+        if not paths:
             return
-        self.current_path = path
-        img = cv2.imread(path)
-        self._show_image(img)
+        self.image_paths = list(paths)
+        self.image_list.clear()
+        for p in self.image_paths:
+            self.image_list.addItem(os.path.basename(p))
+        self._show_image(cv2.imread(self.image_paths[0]))
         self.result_label.setText("检测状态: 待检测")
-        self.detail_label.setText(f"图片: {os.path.basename(path)}")
-        self.statusBar().showMessage(f"已加载: {path}")
+        self.detail_label.setText(f"已上传 {len(self.image_paths)} 张图片, 点击[一键检测]开始批量检测")
+        self.statusBar().showMessage(f"已加载 {len(self.image_paths)} 张图片")
+
+    def on_image_selected(self, item):
+        """点击列表中的图片, 显示其原图"""
+        row = self.image_list.row(item)
+        if 0 <= row < len(self.image_paths):
+            self._show_image(cv2.imread(self.image_paths[row]))
 
     def run_detect(self):
-        if not self.current_path:
-            QMessageBox.information(self, "提示", "请先上传图片")
+        if not self.image_paths:
+            QMessageBox.information(self, "提示", "请先上传图片(可多选)")
             return
         if self.detector is None:
             self._load_model()
@@ -160,36 +192,54 @@ class MainWindow(QMainWindow):
             from src.preprocessing import GluePreprocessor
             self.detector.preprocessor = GluePreprocessor(self.cfg)
         self.btn_detect.setEnabled(False)
-        self.statusBar().showMessage("检测中...")
-        self.worker = DetectWorker(self.detector, self.current_path)
-        self.worker.finished.connect(self.on_detect_done)
+        self._batch_ok = 0
+        self._batch_ng = 0
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        self.progress.setMaximum(len(self.image_paths))
+        self.statusBar().showMessage(f"批量检测中... 共 {len(self.image_paths)} 张")
+        self.worker = DetectWorker(self.detector, self.image_paths)
+        self.worker.result_ready.connect(self.on_detect_done)
+        self.worker.all_finished.connect(self.on_batch_finished)
         self.worker.error.connect(self.on_detect_error)
         self.worker.start()
 
-    def on_detect_done(self, result):
-        self.btn_detect.setEnabled(True)
+    def on_detect_done(self, result, current, total):
+        """每检测完一张: 显示该张结果 + 记录历史 + 更新进度"""
         self.current_result = result
         self._show_image(result["annotated"])
         status = result["status"]
-        color = "green" if status == "OK" else "red"
+        if status == "OK":
+            self._batch_ok += 1
+            color = "green"
+        else:
+            self._batch_ng += 1
+            color = "red"
         self.result_label.setText(
             f'<span style="color:{color};">检测判定: {status}</span>  |  '
-            f'耗时: {result["elapsed_ms"]}ms  |  置信度阈值: {result["conf"]}')
+            f'第 {current}/{total} 张  |  耗时: {result["elapsed_ms"]}ms')
         if result["defects"]:
             lines = [f"• {d['name_zh']} ({d['class']}): 置信度 {d['conf']:.2f}, 框 {d['bbox']}"
                      for d in result["defects"]]
             self.detail_label.setText("检出目标:\n" + "\n".join(lines))
         else:
             self.detail_label.setText("未检出目标 (请检查模型是否已针对胶路数据训练)")
+        self.progress.setValue(current)
         try:
             self.recorder.record(result)
             self._refresh_history()
-            self.statusBar().showMessage(f"检测完成, 判定 {status}, 已记录")
         except Exception as e:
             self.statusBar().showMessage(f"记录失败: {e}")
 
+    def on_batch_finished(self, total):
+        """全部检测完成: 恢复按钮并显示汇总"""
+        self.btn_detect.setEnabled(True)
+        self.statusBar().showMessage(
+            f"批量检测完成: 共 {total} 张, OK {self._batch_ok} 张 / NG {self._batch_ng} 张, 已全部记录")
+
     def on_detect_error(self, msg):
         self.btn_detect.setEnabled(True)
+        self.progress.setVisible(False)
         QMessageBox.critical(self, "检测出错", msg)
 
     def export_report(self):
