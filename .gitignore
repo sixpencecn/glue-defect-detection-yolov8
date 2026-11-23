@@ -1,0 +1,39 @@
+# 锂电池胶路缺陷检测项目 - Git 忽略规则
+# 大体积二进制文件不入库, 通过 scripts/ 下的脚本重建
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 合成数据集图像 (运行 scripts/generate_synthetic_data.py 重建)
+data/raw/images/*.jpg
+data/raw/images/*.png
+data/dataset/images/**/*.jpg
+data/dataset/images/**/*.png
+data/augmented/
+
+# YOLO 训练缓存
+*.cache
+
+# 模型权重 (运行 python -m src.train 重建)
+weights/*.pt
+weights/runs/
+
+# 运行产物 (运行 scripts/batch_detect_demo.py / src.train --compare 重建)
+outputs/defect_shots/
+outputs/reports/*.xlsx
+outputs/history.json
+
+# Ultralytics 验证输出
+runs/
+
+# 日志
+logs/*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db

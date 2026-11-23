@@ -1,0 +1,10 @@
+path: D:/WorkBuddy/2026-11-23-09-33-32/GlueDefectYOLO/data/dataset
+train: images/train
+val: images/val
+test: images/test
+nc: 4
+names:
+  0: OK
+  1: broken_glue
+  2: lack_glue
+  3: overflow

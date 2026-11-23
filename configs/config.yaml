@@ -1,0 +1,71 @@
+# ============================================================
+# 锂电池胶路缺陷检测系统 - 全局配置
+# 企业场景: 康视达 - 锂电封装打胶工序 2.5D光源胶检项目
+# ============================================================
+
+# ---------------- 类别定义 (4类) ----------------
+classes:
+  names:
+    0: OK          # 正常胶路
+    1: broken_glue # 断胶: 胶路中途断开, 存在断点
+    2: lack_glue   # 缺胶: 胶量不足, 胶路局部变窄/缺失
+    3: overflow    # 溢胶: 胶量过多, 溢出到胶路外侧
+  zh_names:
+    0: 正常胶路
+    1: 断胶
+    2: 缺胶
+    3: 溢胶
+  colors:            # BGR, 用于绘制检测框
+    0: [0, 200, 0]     # OK 绿
+    1: [0, 0, 255]     # 断胶 红
+    2: [0, 165, 255]   # 缺胶 橙
+    3: [255, 0, 0]     # 溢胶 蓝
+
+# ---------------- 图像与2.5D光源成像 ----------------
+image:
+    input_size: 640        # YOLO输入分辨率
+    roi:                   # ROI裁剪区域 (x1,y1,x2,y2), null表示全图
+        x1: 0
+        y1: 0
+        x2: null
+        y2: null
+    gaussian_kernel: 3     # 高斯滤波核 (奇数)
+    enable_clahe: true     # 亮度均衡 CLAHE (抑制反光/光照波动)
+    clahe_clip: 2.0
+    clahe_grid: 8
+
+# ---------------- 数据集 ----------------
+dataset:
+    root: data/dataset
+    train_ratio: 0.7
+    val_ratio: 0.2
+    test_ratio: 0.1
+    augment:
+        brightness: true   # 亮度扰动 (模拟2.5D光源波动)
+        noise: true        # 高斯噪声
+        flip: true         # 水平/垂直翻转
+        hsv: true          # HSV色域扰动
+
+# ---------------- YOLOv8 训练超参 ----------------
+train:
+    model: yolov8n.pt      # 可选 yolov8n/s/m/l/x; 毕设推荐 n 或 s
+    epochs: 100
+    batch: 16
+    imgsz: 640
+    lr0: 0.01              # 初始学习率
+    iou: 0.7               # 训练时CIoU阈值
+    device: 0              # 0=GPU, cpu=CPU
+    patience: 20           # 早停轮数
+    seed: 42
+
+# ---------------- 推理参数 ----------------
+inference:
+    conf: 0.25             # 置信度阈值 (调参对比项)
+    iou: 0.45              # NMS的IoU阈值 (调参对比项)
+    max_det: 100
+
+# ---------------- 统计与报表 ----------------
+report:
+    excel_path: outputs/reports/detect_report.xlsx
+    defect_shot_dir: outputs/defect_shots
+    history_db: outputs/history.json

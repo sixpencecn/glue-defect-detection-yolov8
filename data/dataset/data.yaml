@@ -1,0 +1,13 @@
+# YOLOv8 数据集配置 - 锂电池胶路 (LabelImg / YOLO 格式)
+# 路径相对本文件所在目录
+path: .
+train: images/train
+val: images/val
+test: images/test
+
+nc: 4
+names:
+  0: OK           # 正常胶路
+  1: broken_glue  # 断胶
+  2: lack_glue    # 缺胶
+  3: overflow     # 溢胶

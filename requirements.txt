@@ -1,0 +1,23 @@
+# 锂电池胶路缺陷检测系统 - 依赖清单
+# Python 3.9+ (推荐 3.10/3.11; Python 3.13 需 ultralytics>=8.3)
+# 安装: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 深度学习与YOLOv8
+ultralytics>=8.1.0          # 内置 YOLOv8, 依赖 torch>=1.8
+torch>=2.0.0                # 若已安装可跳过; GPU版见 PyTorch 官网
+torchvision>=0.15.0
+
+# 图像处理
+opencv-python>=4.8.0        # OpenCV: 滤波/ROI/形态学
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# 数据与报表
+pandas>=2.0.0
+openpyxl>=3.1.0             # Excel(.xlsx) 导出引擎
+
+# 可视化界面
+PyQt5>=5.15.0
+
+# 绘图(训练曲线/调参分析)
+matplotlib>=3.7.0
