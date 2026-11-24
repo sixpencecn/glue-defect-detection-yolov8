@@ -38,9 +38,11 @@ class GlueDetector:
             config = load_config()
         self.config = config
         inf = config.get("inference", {})
-        self.conf = float(inf.get("conf", 0.25))
+        self.conf = float(inf.get("conf", 0.55))
         self.iou = float(inf.get("iou", 0.45))
         self.max_det = int(inf.get("max_det", 100))
+        # 每类最多保留的框数; 0=不限制. 本数据集每图仅1处缺陷, 设为1可抑制同类重复框误标
+        self.max_boxes_per_class = int(inf.get("max_boxes_per_class", 1))
         self.weight = resolve_weight(weight_path)
         self.model = YOLO(self.weight)
         self.use_preprocess = use_preprocess
@@ -78,10 +80,28 @@ class GlueDetector:
         defects = []
         annotated = original.copy()
         if res.boxes is not None and len(res.boxes) > 0:
+            # 收集全部候选框
+            candidates = []
             for box in res.boxes:
                 cls_id = int(box.cls.item())
                 conf = float(box.conf.item())
                 x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+                candidates.append({"cls_id": cls_id, "conf": conf, "bbox": [x1, y1, x2, y2]})
+
+            # 每类限框: 仅保留置信度最高的前 max_boxes_per_class 个, 抑制同类重复误标
+            if self.max_boxes_per_class > 0:
+                by_cls = {}
+                for c in candidates:
+                    by_cls.setdefault(c["cls_id"], []).append(c)
+                candidates = []
+                for items in by_cls.values():
+                    items.sort(key=lambda x: -x["conf"])
+                    candidates.extend(items[:self.max_boxes_per_class])
+
+            for c in candidates:
+                cls_id = c["cls_id"]
+                conf = c["conf"]
+                x1, y1, x2, y2 = c["bbox"]
                 name = CLASS_NAMES.get(cls_id, f"class{cls_id}")
                 zh = CLASS_ZH.get(cls_id, name)
                 color = CLASS_COLORS.get(cls_id, (0, 255, 0))
